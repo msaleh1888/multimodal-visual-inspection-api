@@ -1,0 +1,14 @@
+[project]
+name = "multimodal-visual-inspection-api"
+version = "0.1.0"
+description = "Production-style multimodal AI system for image/document analysis with grounded explanations"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.30",
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
