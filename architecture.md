@@ -1,69 +1,76 @@
 # Architecture
 
-## 1. Architecture Summary
+## 1. Architecture Summary (VLM‑First)
 
-This project is a domain-agnostic **multimodal AI service** that:
+This project implements a **VLM‑first multimodal AI service** for image and document analysis.
 
+**Primary principle:** image understanding is performed by a **Vision‑Language Model (VLM)** that reasons jointly over visual input and text prompts. Vision‑only models are supported **only as optional baselines**, not as the default path.
+
+The system:
 - Accepts **images** (JPEG/PNG) and **documents** (PDFs / scanned images)
-- Runs a **perception step** (vision or document understanding)
-- Produces **structured findings** (labels, extracted fields, confidence, evidence)
-- Uses an **LLM reasoning step** to generate **grounded explanations and recommendations**
-- Returns a consistent JSON response via a production-style FastAPI interface
-
-The design mirrors real-world VLM usage patterns: **separate perception from reasoning**, keep components swappable, and enforce grounded outputs.
+- Uses **true multimodal reasoning** for image analysis (image + prompt → language output)
+- Uses **document understanding** for extraction, followed by grounded language interpretation
+- Returns a consistent JSON response via a production‑style FastAPI interface
 
 ---
 
-## 2. High-Level Component Diagram
+## 2. High‑Level Architecture (Logical View)
 
 ```mermaid
 flowchart LR
-    C[Client] -->|HTTP| API[FastAPI API]
+    C[Client]
+    C -->|HTTP| API[FastAPI API]
 
     API --> V1[Input Validation]
     V1 --> P[Preprocessing]
 
-    P -->|image| IA[Image Analyzer]
-    P -->|document| DA[Document Analyzer]
+    %% Image paths
+    P -->|image + prompt| VLM[VLM Image Analyzer]
+    P -->|image| VIS[Vision‑Only Baseline (Optional)]
 
-    IA --> F[Findings Builder]
-    DA --> F
+    %% Document path
+    P -->|document| DOC[Document Analyzer]
 
-    F --> LLM[LLM Explainer]
-    LLM --> R[Response Assembler]
+    %% Outputs
+    VLM --> R[Response Assembler]
+    VIS --> R
+    DOC --> LLM2[LLM Interpreter]
+    LLM2 --> R
 
     R --> API
     API -->|JSON| C
 
-    API --> LOG[Logging/Observability]
-    IA --> LOG
-    DA --> LOG
-    LLM --> LOG
+    API --> LOG[Logging & Observability]
+    VLM --> LOG
+    DOC --> LOG
+    LLM2 --> LOG
 ```
 
 ---
 
-## 3. Key Architectural Principles
+## 3. Core Architectural Principles
 
-1. **Perception ≠ Reasoning**
-   - Perception produces structured signals from visual inputs.
-   - Reasoning turns those signals into natural-language explanations.
+### 3.1 VLM‑First Image Reasoning
+- Image analysis is performed by a **Vision‑Language Model** that directly conditions language generation on visual input.
+- The LLM *sees the image*, not a summary of labels.
 
-2. **Swappable model adapters**
-   - Image analyzer, document analyzer, and LLM are abstracted behind adapters.
-   - You can swap a model/service without rewriting the pipeline.
+### 3.2 Separation of Perception Modes
+- **Primary:** VLM image analyzer (image + prompt)
+- **Secondary:** vision‑only baseline (classifier / embeddings) for debugging and comparison
 
-3. **Grounded outputs by construction**
-   - The LLM receives only structured findings and is instructed to avoid inventing facts.
+### 3.3 Grounded Outputs by Design
+- Language output must be grounded in visual or extracted evidence.
+- Uncertainty and low‑confidence cases must be surfaced explicitly.
 
-4. **Consistent contract**
-   - Both `/analyze/image` and `/analyze/document` return the same top-level schema.
+### 3.4 Swappable Adapters
+- VLMs, vision backbones, and document engines are accessed through adapters.
+- Models can be swapped without changing API contracts.
 
 ---
 
-## 4. Data Flow
+## 4. Data Flows
 
-### 4.1 Image Analysis Flow
+### 4.1 Image Analysis — VLM Path (Primary)
 
 ```mermaid
 sequenceDiagram
@@ -71,32 +78,47 @@ sequenceDiagram
     participant Client
     participant API as FastAPI
     participant Pre as Preprocess
-    participant Img as Image Analyzer
-    participant Build as Findings Builder
-    participant LLM as LLM Explainer
+    participant VLM as VLM Analyzer
 
-    Client->>API: POST /analyze/image (file)
-    API->>Pre: decode + resize + normalize
-    Pre->>Img: image tensor
-    Img-->>Build: label + confidence + evidence
-    Build->>LLM: structured findings JSON
-    LLM-->>API: explanation + recommendation
+    Client->>API: POST /analyze/image (image, prompt?)
+    API->>Pre: decode + EXIF fix + RGB
+    Pre->>VLM: image + prompt
+    VLM-->>API: explanation + recommendation + confidence
     API-->>Client: JSON response
 ```
 
-**Perception Output (example):**
-- `finding` (label)
-- `confidence`
-- `details` (top-k labels, embedding metadata, etc.)
-
-**Reasoning Output (example):**
-- `explanation`
-- `recommendation`
-- optional `warnings` (e.g., low confidence)
+**Key characteristics**
+- Language reasoning is directly conditioned on visual content
+- No intermediate label requirement
+- Suitable for open‑ended reasoning tasks
 
 ---
 
-### 4.2 Document Analysis Flow
+### 4.2 Image Analysis — Vision‑Only Baseline (Optional)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client
+    participant API as FastAPI
+    participant Pre as Preprocess
+    participant Vis as Vision Baseline
+
+    Client->>API: POST /analyze/image (baseline mode)
+    API->>Pre: decode + normalize
+    Pre->>Vis: image tensor
+    Vis-->>API: labels + confidence
+    API-->>Client: JSON response
+```
+
+**Purpose**
+- Debugging perception
+- Evaluation and comparison
+- Not the default pipeline
+
+---
+
+### 4.3 Document Analysis Flow
 
 ```mermaid
 sequenceDiagram
@@ -105,108 +127,69 @@ sequenceDiagram
     participant API as FastAPI
     participant Pre as Preprocess
     participant Doc as Document Analyzer
-    participant Build as Findings Builder
-    participant LLM as LLM Explainer
+    participant LLM as LLM Interpreter
 
     Client->>API: POST /analyze/document (PDF/image)
-    API->>Pre: if PDF -> render pages
+    API->>Pre: render pages / normalize
     Pre->>Doc: pages/images
-    Doc-->>Build: extracted fields + tables + confidence
-    Build->>LLM: structured extracted JSON
+    Doc-->>LLM: structured fields + confidence
     LLM-->>API: interpretation + recommendation
     API-->>Client: JSON response
 ```
 
-**Perception Output (example):**
-- extracted fields and tables
-- confidence scores
-- page/region metadata (optional)
+Documents are treated as **extraction + interpretation** tasks rather than end‑to‑end VLM reasoning.
 
 ---
 
-## 5. Modules and Responsibilities
+## 5. Module Responsibilities
 
 ### 5.1 API Layer (FastAPI)
-**Responsibilities**
-- Request parsing + validation
-- Enforce input limits (type, size, max pages)
-- Orchestrate pipeline via service layer
-- Return consistent response schema
-- Error handling (400/422/500)
-
-**Endpoints**
-- `POST /analyze/image`
-- `POST /analyze/document`
-- `GET /healthz` (recommended)
+- Request parsing and validation
+- Pipeline orchestration
+- Stable response schema
+- Error handling and request IDs
 
 ---
 
 ### 5.2 Preprocessing Layer
-**Image preprocessing**
 - Decode image bytes
-- Resize to model input
-- Normalize
-- (Optional) quality checks (blur/darkness heuristics)
+- Fix EXIF orientation
+- Convert to RGB
+- Enforce size/type limits
 
-**Document preprocessing**
-- If PDF: render pages to images (configurable DPI)
-- Standardize page size/resolution
-- (Optional) deskew/rotate
-
-Outputs a normalized representation for the analyzer.
+Preprocessing does **not** assume model‑specific resizing unless required by an adapter.
 
 ---
 
-### 5.3 Perception Layer
-
-#### Image Analyzer
-- Wraps a pre-trained vision encoder/model
-- Produces:
-  - classification label(s)
-  - confidence
-  - optional evidence (top-k labels, embedding info)
-
-#### Document Analyzer
-- Wraps a document understanding system (managed service or local model)
-- Produces:
-  - extracted fields and tables
-  - confidence scores
-  - optional layout/page metadata
+### 5.3 VLM Image Analyzer (Primary)
+- Accepts image + optional prompt
+- Performs multimodal reasoning
+- Produces explanation, recommendation, and uncertainty
+- Exposes model metadata
 
 ---
 
-### 5.4 Findings Builder
-Normalizes perception outputs into a consistent internal format:
-
-- maps model/service outputs into a stable schema
-- attaches confidence, evidence, and warnings
-- ensures predictable structure for the LLM layer
+### 5.4 Vision‑Only Baseline (Optional)
+- Uses pre‑trained vision models
+- Produces labels/embeddings
+- Used for evaluation and debugging only
 
 ---
 
-### 5.5 LLM Explainer
-- Takes structured findings and generates:
-  - `explanation`
-  - `recommendation`
-- Enforces grounding constraints:
-  - refer only to provided fields/labels
-  - if confidence is low or required fields missing, produce a warning and suggest next action
+### 5.5 Document Analyzer
+- OCR + layout + key‑value extraction
+- Returns structured fields and confidence
 
 ---
 
-### 5.6 Observability
-Minimal but production-minded observability:
-
-- Request ID for correlation
-- Step timings: preprocessing, perception, LLM
-- Model/service version metadata
-- Structured logs for failures
+### 5.6 Language Interpretation Layer (Documents)
+- Interprets extracted fields
+- Generates grounded explanations
+- Avoids speculative or domain‑specific claims
 
 ---
 
-## 6. Contracts
-
-### 6.1 Response Shape (top-level)
+## 6. Response Contract (Conceptual)
 
 ```json
 {
@@ -219,55 +202,28 @@ Minimal but production-minded observability:
 }
 ```
 
-Notes:
-- `details` differs by analyzer, but remains JSON-serializable.
-- `warnings` is optional.
+The same contract is used for both VLM and non‑VLM paths.
 
 ---
 
-## 7. Failure Modes and Handling
+## 7. Failure Modes
 
-- **Unsupported file type** → `400 Bad Request`
-- **File too large / too many pages** → `413 Payload Too Large`
-- **Preprocessing failure (corrupt image/PDF)** → `422 Unprocessable Entity`
-- **Analyzer failure (model/service timeout)** → `502 Bad Gateway` or `504 Gateway Timeout`
-- **LLM failure** → `502 Bad Gateway`
+- Unsupported input → `400`
+- Oversized payload → `413`
+- Corrupt image/PDF → `422`
+- Model timeout/failure → `502` / `504`
 
-All failures should:
-- return a stable error response
-- log request_id + stage + error details
+Failures are logged with request‑level correlation IDs.
 
 ---
 
-## 8. Extensibility
+## 8. Why This Architecture Is Truly VLM‑Aligned
 
-Designed extension points:
-
-- Add new analyzers (e.g., `ScreenshotAnalyzer`, `ReceiptAnalyzer`)
-- Swap vision encoders (CNN ↔ ViT)
-- Swap document engine (managed service ↔ open-source)
-- Swap LLM provider/model
-- Add async processing (job queue) for large PDFs
+- The language model reasons **directly over visual input**
+- Vision‑only models are explicitly secondary
+- The design mirrors real production multimodal systems that balance control, cost, and explainability
 
 ---
 
-## 9. Deployment View (Local First)
-
-- Local development: FastAPI + local analyzers (where possible)
-- Optional cloud adapters:
-  - managed document engine
-  - hosted LLM
-
-A future production deployment would containerize the API service and use environment-based configuration for model/service adapters.
-
----
-
-## 10. Why This Architecture is “VLM-Aligned”
-
-The system follows a practical production pattern for multimodal AI:
-
-- **Perception** extracts visual signals (labels/fields/confidence)
-- **Reasoning** converts signals into a user-facing narrative
-
-This mirrors how many VLM-backed products are engineered at scale: the multimodal model(s) are integrated as components, while the service focuses on robustness, grounding, and reliable delivery.
+**End of Architecture**
 

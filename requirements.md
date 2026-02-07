@@ -5,9 +5,11 @@
 **Project Name:** Multimodal Visual Inspection & Explanation API
 
 **Purpose:**
-Build a domain-agnostic, production-style multimodal AI system that analyzes images or documents, extracts structured signals, and generates natural-language explanations and recommendations using pre-trained vision and language models.
+Build a domain-agnostic, production-style multimodal AI system that analyzes images or documents and returns **structured results** plus **grounded explanations and recommendations**.
 
-The project is intentionally designed to mirror how Vision-Language Models (VLMs) and multimodal systems are used in real-world products, without being tied to a specific industry (e.g., agriculture or healthcare).
+**Key clarification (VLM-first):**
+- Image understanding is performed primarily via a **Vision–Language Model (VLM)** that reasons jointly over **image + prompt/task**.
+- Vision-only models (e.g., classifiers/embeddings) are supported **only as optional baselines** for debugging and evaluation.
 
 ---
 
@@ -16,7 +18,7 @@ The project is intentionally designed to mirror how Vision-Language Models (VLMs
 ### 2.1 Goals
 
 - Demonstrate applied multimodal AI system design (vision + language + reasoning)
-- Use **pre-trained models** (no training from scratch)
+- Use **pre-trained models** (no training foundation models from scratch)
 - Build a clear, explainable inference pipeline
 - Expose functionality through clean, production-style APIs
 - Generate both **structured outputs** and **human-readable explanations**
@@ -24,7 +26,7 @@ The project is intentionally designed to mirror how Vision-Language Models (VLMs
 
 ### 2.2 Non-Goals
 
-- Training or fine-tuning large foundation models
+- Training foundation models from scratch
 - Achieving state-of-the-art accuracy
 - Making domain-specific or regulated claims (e.g., medical diagnosis)
 - Building a full frontend application
@@ -46,52 +48,53 @@ The project is intentionally designed to mirror how Vision-Language Models (VLMs
 The system shall:
 
 - Accept **image** and **document** inputs via HTTP APIs
-- Perform visual or document-level analysis using pre-trained models
-- Extract structured findings from inputs
-- Generate natural-language explanations and recommendations
+- Perform **VLM-based image reasoning** (image + prompt/task)
+- Perform **document extraction** (fields/tables) followed by grounded interpretation
 - Return results in a consistent JSON schema
 
 ---
 
 ## 5. Functional Requirements
 
-### 5.1 Image Analysis Pipeline
+### 5.1 Image Analysis (VLM-First)
 
 **FR-IMG-1**: The system shall accept image inputs (JPEG/PNG).
 
-**FR-IMG-2**: The system shall preprocess images (resize, normalize).
+**FR-IMG-2**: The system shall preprocess images (decode bytes, fix EXIF orientation, convert to RGB; resizing may be adapter-specific).
 
-**FR-IMG-3**: The system shall use a pre-trained vision encoder or image model to analyze the image.
+**FR-IMG-3**: The system shall support an optional **prompt/task instruction** for image analysis.
 
-**FR-IMG-4**: The system shall output a primary finding or classification label.
+**FR-IMG-4**: The system shall use a **Vision–Language Model (VLM)** to reason over the image and prompt/task jointly.
 
-**FR-IMG-5**: The system shall output a confidence score associated with the finding.
+**FR-IMG-5**: The system shall output a concise **finding** (short summary) and an associated **confidence/uncertainty** signal.
 
-**FR-IMG-6**: The system shall pass the structured result to a language model for explanation and recommendation generation.
+**FR-IMG-6**: The system shall generate a **grounded explanation** and a **recommended next step** based on visual evidence.
+
+**FR-IMG-7**: The system shall expose model metadata for the VLM used (name/version).
 
 ---
 
-### 5.2 Document Analysis Pipeline
+### 5.2 Image Analysis (Vision-Only Baseline — Optional)
+
+**FR-IMG-B1**: The system may provide an optional vision-only baseline mode (classifier and/or embedding model) for debugging and evaluation.
+
+**FR-IMG-B2**: In baseline mode, the system may output top-k labels or similarity results with confidence.
+
+**FR-IMG-B3**: Baseline mode shall not be the default behavior.
+
+---
+
+### 5.3 Document Analysis Pipeline
 
 **FR-DOC-1**: The system shall accept document inputs (PDF or image-based documents).
 
-**FR-DOC-2**: The system shall extract text and layout information using a pre-trained document or vision-language model.
+**FR-DOC-2**: The system shall extract text and layout information using a document understanding engine (managed service or local pipeline).
 
-**FR-DOC-3**: The system shall identify and extract key fields from the document.
+**FR-DOC-3**: The system shall identify and extract key fields (and tables when available).
 
-**FR-DOC-4**: The system shall represent extracted data in a structured JSON format.
+**FR-DOC-4**: The system shall represent extracted data in a structured JSON format, including confidence scores when available.
 
-**FR-DOC-5**: The system shall pass extracted fields to a language model for interpretation and summarization.
-
----
-
-### 5.3 Explanation & Recommendation Generation
-
-**FR-LLM-1**: The system shall use a large language model to generate explanations based on structured inputs.
-
-**FR-LLM-2**: The system shall generate recommendations or next steps derived from the analysis.
-
-**FR-LLM-3**: The system shall ensure explanations are grounded in extracted data (no free hallucination).
+**FR-DOC-5**: The system shall generate an interpretation/explanation grounded in the extracted fields, including warnings when fields are missing or uncertain.
 
 ---
 
@@ -102,12 +105,14 @@ The system shall:
 **FR-API-2**: The system shall provide an endpoint for image analysis:
 - `POST /analyze/image`
 
-**FR-API-3**: The system shall provide an endpoint for document analysis:
+**FR-API-3**: The image endpoint shall support an optional prompt/task input.
+
+**FR-API-4**: The system shall provide an endpoint for document analysis:
 - `POST /analyze/document`
 
-**FR-API-4**: API responses shall be returned in JSON format.
+**FR-API-5**: API responses shall be returned in JSON format.
 
-**FR-API-5**: API responses shall include both structured results and natural-language explanations.
+**FR-API-6**: API responses shall include both structured results and natural-language explanations.
 
 ---
 
@@ -121,7 +126,8 @@ The system shall:
     "key": "value"
   },
   "explanation": "string",
-  "recommendation": "string"
+  "recommendation": "string",
+  "warnings": ["string"]
 }
 ```
 
@@ -133,6 +139,7 @@ The system shall:
 
 - The system should handle invalid inputs gracefully.
 - Errors should return meaningful HTTP status codes and messages.
+- The system should surface low-confidence cases explicitly.
 
 ### 7.2 Performance
 
@@ -142,6 +149,7 @@ The system shall:
 ### 7.3 Observability
 
 - Basic logging of requests and inference steps.
+- Request correlation via request IDs.
 - Clear separation between preprocessing, inference, and reasoning steps.
 
 ---
@@ -151,7 +159,7 @@ The system shall:
 - Use Python as the primary language.
 - Use FastAPI for the API layer.
 - Use pre-trained models only (open-source or managed services).
-- Design components to be swappable (vision model, document model, LLM).
+- Design components to be swappable (VLM adapter, document engine adapter).
 
 ---
 
@@ -159,9 +167,10 @@ The system shall:
 
 The system should be designed to allow:
 
-- Adding new image or document analyzers
-- Replacing the vision encoder or document model
-- Upgrading the language model
+- Adding new tasks/prompts for the VLM image analyzer
+- Adding new analyzers (e.g., baseline classifiers, embedding search)
+- Replacing the VLM model/provider
+- Replacing the document understanding engine
 - Adding batch or async processing in the future
 
 ---
@@ -170,19 +179,20 @@ The system should be designed to allow:
 
 The project is considered successful if:
 
-- Both image and document inputs can be processed end to end
-- Outputs include structured data and clear explanations
-- The system architecture is understandable and well-documented
-- The project can be clearly explained in a technical interview as a real-world applied multimodal system
+- Image inputs can be processed end-to-end using a **true VLM** (image + prompt)
+- Document inputs can be extracted and interpreted end-to-end
+- Outputs include structured data and clear, grounded explanations
+- The architecture is understandable and well-documented
+- The project can be clearly explained in a technical interview as a real-world VLM-first system
 
 ---
 
 ## 11. Out of Scope (Explicit)
 
-- Model training pipelines
+- Foundation model training pipelines
 - User authentication and authorization
 - UI/Frontend development
-- Domain-specific validation rules
+- Domain-specific validation rules and regulated claims
 
 ---
 

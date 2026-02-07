@@ -1,183 +1,172 @@
 # Multimodal Visual Inspection & Explanation API
 
-## Overview
+A **VLM-first**, production-style backend service for analyzing **images and documents** and returning **grounded explanations and recommendations**.
 
-This project demonstrates a **production-style multimodal AI system** that analyzes **images** and **documents**, extracts structured signals using pre-trained vision and document models, and generates **grounded natural-language explanations and recommendations** using a large language model (LLM).
-
-The system is **domain-agnostic by design** and mirrors how Vision–Language Models (VLMs) and multimodal pipelines are used in real-world products: perception first, reasoning second.
+This project is intentionally designed to demonstrate **real-world multimodal system design**, not toy demos or academic experiments.
 
 ---
 
-## Key Capabilities
+## 🔑 Key Idea (VLM-First)
 
-- 📷 **Image analysis** using pre-trained vision models
-- 📄 **Document understanding** (PDFs and scanned images)
-- 🧠 **LLM-based reasoning** for explanation and recommendations
-- 🔗 **End-to-end API pipelines** (image → insight, document → interpretation)
-- 🧱 **Modular, swappable architecture** suitable for production systems
+**Image analysis is performed using a true Vision–Language Model (VLM)**:
+
+> **image + prompt/task → multimodal reasoning → explanation**
+
+The language model reasons **directly over visual input**, not over pre-generated labels.
+
+Vision-only models (e.g., classifiers or embeddings) are supported **only as optional baselines** for debugging and evaluation.
 
 ---
 
-## High-Level Architecture
+## ✨ What This Project Demonstrates
 
-```text
+- Correct use of **Vision–Language Models (VLMs)**
+- Separation of **perception**, **reasoning**, and **interpretation**
+- Production-style API design with FastAPI
+- Grounded, explainable outputs (not hallucination-prone demos)
+- Swappable model adapters (VLMs, vision baselines, document engines)
+
+This mirrors how **real AI products** are built.
+
+---
+
+## 🧱 System Capabilities
+
+### Image Analysis (Primary)
+- Accepts image + optional prompt/task
+- Uses a VLM for multimodal reasoning
+- Returns:
+  - short finding/summary
+  - confidence or uncertainty signal
+  - grounded explanation
+  - recommended next steps
+
+### Image Analysis (Optional Baseline)
+- Vision-only classifier or embedding model
+- Used for debugging, benchmarking, and comparison
+- Never the default path
+
+### Document Analysis
+- OCR and layout-aware extraction
+- Structured field and table extraction
+- Grounded interpretation using language models
+
+---
+
+## 🏗 High-Level Architecture
+
+```
 Client
-  │
-  ▼
+  ↓
 FastAPI API
-  │
-  ▼
-Preprocessing
-  │
-  ├── Image Analyzer (vision model)
-  └── Document Analyzer (document understanding)
-  │
-  ▼
-Structured Findings
-  │
-  ▼
-LLM Explainer
-  │
-  ▼
-JSON Response (finding + explanation + recommendation)
+  ↓
+Preprocessing (decode / normalize)
+  ↓
+┌───────────────────────────┐
+│ Image → VLM Analyzer      │  ← primary
+│ Image → Vision Baseline   │  ← optional
+│ Document → Doc Analyzer  │
+└───────────────────────────┘
+  ↓
+Response Assembly
+  ↓
+JSON Output
 ```
 
-The system explicitly separates:
-- **Perception** (vision / document understanding)
-- **Reasoning** (language-based explanation)
-
-This separation improves reliability, explainability, and extensibility.
+The architecture is documented in detail in `architecture.md`.
 
 ---
 
-## API Endpoints
+## 📡 API Overview
 
-### `POST /analyze/image`
+### Image Analysis
+`POST /analyze/image`
 
-Analyze a single image and return a structured finding with explanation.
+- Supports:
+  - `mode=vlm` (default)
+  - `mode=baseline` (optional)
+- Accepts optional `prompt` or task-based parameters
+- Returns structured and natural-language outputs
 
-**Input:** JPEG / PNG image
+### Document Analysis
+`POST /analyze/document`
 
-**Output:**
-- finding
-- confidence
-- explanation
-- recommendation
+- Accepts PDF or image documents
+- Extracts fields/tables
+- Generates grounded interpretation
 
----
-
-### `POST /analyze/document`
-
-Analyze a document (PDF or scanned image), extract structured fields, and generate an interpretation.
-
-**Input:** PDF or image document
-
-**Output:**
-- extracted fields
-- overall confidence
-- explanation
-- recommendation
+See `api_contract.md` for full request/response schemas.
 
 ---
 
-### `GET /healthz`
+## 🧪 Evaluation Philosophy
 
-Simple health check endpoint.
+The project focuses on **robustness and grounding**, not leaderboard scores:
+
+- Hallucination checks
+- Low-confidence surfacing
+- Prompt sensitivity testing
+- Failure-mode awareness
+
+Evaluation details are documented in `evaluation_plan.md`.
 
 ---
 
-## Example Response
+## 🛠 Tech Stack
 
-```json
-{
-  "finding": "Possible visual anomaly detected",
-  "confidence": 0.81,
-  "details": {
-    "model": {"name": "vision-model", "version": "v1"}
-  },
-  "explanation": "The image shows visual patterns that differ from the expected baseline.",
-  "recommendation": "Capture a clearer image or perform a follow-up inspection.",
-  "warnings": []
-}
+- **Python**
+- **FastAPI**
+- **Vision–Language Models (VLMs)**
+- Optional: vision-only CNN / ViT baselines
+- Optional: managed or open-source document understanding engines
+
+---
+
+## 🚫 Explicit Non-Goals
+
+- Training foundation models from scratch
+- Domain-specific or regulated claims (e.g., medical diagnosis)
+- Frontend/UI development
+- Authentication or billing systems
+
+---
+
+## 🎯 Who This Project Is For
+
+- AI / ML Engineers working with multimodal systems
+- Backend engineers integrating AI services
+- Technical interviewers evaluating applied AI skills
+- Teams building explainable AI products
+
+---
+
+## ▶️ Running Locally (Example)
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --reload
 ```
 
 ---
 
-## Why This Project Matters
+## 📄 Documentation Index
 
-This project focuses on **applied ML system design**, not just model training:
-
-- Uses **pre-trained models**, as is common in production
-- Handles **real-world input variability** (images, PDFs, scans)
-- Produces **human-readable explanations**, not just predictions
-- Demonstrates how multimodal systems are engineered in practice
-
-The same architecture can be applied to:
-- visual inspection
-- document analysis
-- quality control
-- compliance review
-- image-based diagnostics
+- `requirements.md` — functional and non-functional requirements
+- `architecture.md` — system design and data flows
+- `modeling_choices.md` — modeling decisions (VLM-first)
+- `api_contract.md` — API schema and examples
+- `evaluation_plan.md` — evaluation and testing strategy
 
 ---
 
-## Project Documentation
+## 🧠 Why This Matters
 
-Detailed design and engineering decisions are documented in:
+This project avoids the common mistake of presenting:
 
-- `requirements.md` — system goals and scope
-- `architecture.md` — component design and data flow
-- `api_contract.md` — request/response schemas
-- `modeling_choices.md` — model and integration decisions
-- `evaluation_plan.md` — testing and evaluation strategy
-- `repo_structure.md` — repository organization
+> *vision classifier + LLM = VLM*
 
----
-
-## Getting Started (Local)
-
-> **Note:** This project is designed to be run locally with pre-trained models or managed services.
-
-1. Clone the repository
-2. Create and activate a virtual environment
-3. Install dependencies
-4. Configure environment variables (see `.env.example`)
-5. Run the API server
-
-Detailed setup steps will be added as implementation progresses.
-
----
-
-## Design Philosophy
-
-- **Production realism over research demos**
-- **Clarity and grounding over raw model power**
-- **Modularity and extensibility** for future growth
-
-The project intentionally avoids training large models from scratch and instead focuses on how modern AI products are actually built.
-
----
-
-## Future Extensions
-
-- Optional fine-tuning of vision models
-- Multimodal question-answering endpoint
-- Batch / async processing
-- Enhanced evaluation and monitoring
-
----
-
-## Disclaimer
-
-This project is for **demonstration and educational purposes only**. It does not provide domain-specific or regulated advice.
-
----
-
-## License
-
-MIT License (or specify appropriate license)
+Instead, it demonstrates **correct multimodal reasoning**, making it suitable for **real production systems and technical interviews**.
 
 ---
 
 **End of README**
-

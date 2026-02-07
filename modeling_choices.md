@@ -2,207 +2,148 @@
 
 ## 1. Purpose
 
-This document explains the modeling approach and why the project focuses on **pre-trained models** and **adapter-based integration** rather than training large models from scratch.
+This document explains the modeling strategy for the project, with a **VLM-first design**.
 
-The core intent is to demonstrate how real-world multimodal systems are built:
+**Primary goal:** demonstrate how modern systems use **Vision–Language Models (VLMs)** to perform multimodal reasoning directly over images and text.
 
-- perception (vision/document understanding) produces structured signals
-- reasoning (LLM) produces grounded explanations and recommendations
+Vision-only models are supported **only as optional baselines** for debugging, evaluation, and comparison.
 
 ---
 
-## 2. Design Principles
+## 2. Core Design Principles
 
-1. **Production realism**
-   - Most applied teams use pre-trained vision and multimodal models.
-   - Training foundation models is rarely required for product delivery.
+1. **VLM-first for image understanding**
+   - Image reasoning is performed by a multimodal model that conditions language generation on visual input.
+   - The LLM must "see" the image, not a summary of labels.
 
-2. **Swappable components**
-   - Each model/service is accessed through an adapter interface.
-   - We can replace a model without rewriting the pipeline.
+2. **Adapters over tight coupling**
+   - All models (VLMs, vision backbones, document engines) are accessed via adapters.
+   - This allows safe swapping of models without changing pipelines or APIs.
 
 3. **Grounded language output**
-   - LLM output must be constrained to extracted findings.
-   - The LLM is treated as a controlled explanation layer.
+   - Language models must produce outputs grounded in visual or extracted evidence.
+   - Uncertainty must be surfaced explicitly.
 
-4. **Cost/latency awareness**
-   - Use fast perception first, richer reasoning second.
-   - Keep heavy multimodal reasoning optional.
-
----
-
-## 3. Image Analyzer Options
-
-The image analyzer produces:
-- a primary finding/label
-- confidence
-- optional top-k evidence
-
-### Option A (Default): Pre-trained Vision Classifier (CNN/ViT)
-
-**What it is**
-- A pre-trained vision backbone (CNN or ViT) with a lightweight classification head.
-- Can be used as-is or with minimal fine-tuning (optional extension).
-
-**Why it fits this project**
-- Demonstrates standard applied CV workflow.
-- Produces stable, interpretable outputs (labels + confidence).
-- Efficient for synchronous API inference.
-
-**Tradeoffs**
-- Limited reasoning on its own (no natural language).
-- Best for detection/classification tasks.
-
-### Option B: Vision Encoder Producing Embeddings (for similarity/retrieval)
-
-**What it is**
-- A pre-trained vision encoder that outputs embeddings.
-
-**Use cases**
-- Similarity search
-- Near-duplicate detection
-- Clustering
-
-**Why it matters**
-- Embeddings mirror how many VLM pipelines work (shared representation space).
-
-**Tradeoffs**
-- Requires downstream logic to interpret embeddings (e.g., nearest neighbors).
-
-### Option C: Multimodal Model Used Directly for Image Q&A (Optional)
-
-**What it is**
-- A multimodal model that can take an image plus a prompt and generate text.
-
-**Why it’s optional**
-- Higher cost/latency.
-- Requires more careful safety/grounding.
-
-**Best use**
-- “Explain what you see” style prompts.
+4. **Production realism**
+   - Pre-trained models are used.
+   - No training of foundation models from scratch.
 
 ---
 
-## 4. Document Analyzer Options
+## 3. Image Analysis — Primary (VLM)
 
-The document analyzer produces:
-- extracted fields/tables
-- confidence
-- optional layout metadata
+### What is used
 
-### Option A (Default): Managed Document Understanding Service
+A **Vision–Language Model** capable of accepting:
+- image input
+- optional text prompt or task instruction
 
-**What it is**
-- A cloud service that performs OCR + layout + key-value extraction.
+and producing:
+- natural-language explanation
+- recommendation or next steps
+- confidence / uncertainty signal
 
-**Why it fits this project**
-- Closest to how enterprise document pipelines are implemented.
-- Produces structured JSON reliably.
-- Handles PDFs, multi-page documents, and layout variation.
+Examples of suitable model families:
+- CLIP-based multimodal LLMs
+- Vision-capable LLM APIs
+- Open-source VLMs with image-token support
 
-**Tradeoffs**
-- External dependency.
-- Requires credentials and network access.
-
-### Option B: Local OCR + Parsing Pipeline
-
-**What it is**
-- OCR engine + document parsing heuristics.
-
-**Why it’s useful**
-- Fully local development and reproducibility.
-
-**Tradeoffs**
-- Lower accuracy and higher engineering effort.
-- Harder to generalize across document formats.
-
-### Option C: VLM-based Document Q&A (Optional)
-
-**What it is**
-- Use a multimodal model to answer questions about the document image.
-
-**Why it’s optional**
-- Excellent for interpretation, but may be less deterministic for extraction.
-
-**Recommended pattern**
-- Extract structured fields first (Option A/B)
-- Use VLM/LLM second for interpretation
+The exact model choice is abstracted behind a `VLMImageAnalyzer` adapter.
 
 ---
 
-## 5. LLM Explainer Choices
+### Why this is the default
 
-The LLM explainer receives structured findings and produces:
-- explanation
-- recommendation
-- optional warnings/uncertainty notes
-
-### Prompting Strategy (Grounded-by-Design)
-
-- Provide the LLM a structured JSON context:
-  - labels/fields/confidence
-  - missing fields
-- Instruct:
-  - do not invent values
-  - refer only to provided data
-  - if uncertain, say so and propose next action
-
-### Output Style
-
-- Neutral, domain-agnostic language
-- Avoid regulated claims
-- “Possible issue” / “Suggested next step” phrasing
+- True multimodal reasoning
+- No lossy intermediate representation (e.g. labels)
+- Matches how VLM-powered products are actually built
 
 ---
 
-## 6. Recommended Baseline Configuration
+## 4. Image Analysis — Secondary (Vision-Only Baseline)
 
-To keep the project practical, reproducible, and impressive:
+### What it is
 
-- **Image Analyzer:** Option A (pre-trained classifier) or Option B (embeddings)
-- **Document Analyzer:** Option A (managed document service) with Option B as local fallback
-- **LLM Explainer:** grounded prompt strategy + structured response schema
+A pre-trained vision model (e.g. ResNet / ViT) used to:
+- produce labels or embeddings
+- inspect raw perception quality
+- compare against VLM behavior
 
-This baseline provides the strongest interview narrative:
+### Why it exists
 
-- real-world perception components
-- production-style extraction
-- controlled reasoning layer
-- clear modularity
+- Debugging and evaluation
+- Performance benchmarking
+- Failure analysis
 
----
+### Important constraint
 
-## 7. Optional Extensions (If Time Allows)
-
-### Extension 1: Lightweight Fine-Tuning
-- Fine-tune the image classifier on a small public dataset.
-- Keep it clearly optional.
-
-### Extension 2: Retrieval-Augmented Explanation
-- Store past findings in a vector DB.
-- Retrieve similar cases to improve explanations.
-
-### Extension 3: Multimodal Q&A Mode
-- Add a third endpoint:
-  - `POST /analyze/qa`
-- Accept image + question and return answer.
+This path is:
+- **never the default**
+- **never presented as the main solution**
 
 ---
 
-## 8. Why We Avoid Training Foundation Models
+## 5. Document Analysis Modeling
 
-Training large multimodal models from scratch is:
-- expensive
-- slow
-- unnecessary for most product teams
+Document analysis follows a different but complementary pattern:
 
-The project instead demonstrates the skills hiring teams look for:
+1. **Document understanding** (OCR, layout, key-value extraction)
+2. **Language interpretation** over extracted structured data
 
-- selecting the right pre-trained model
-- building reliable pipelines around it
-- evaluation and failure handling
-- deployment and observability
-- producing grounded, user-facing explanations
+This separation is intentional:
+- extraction must be deterministic
+- interpretation must be grounded
+
+VLM-based document Q&A may be explored as a future extension.
+
+---
+
+## 6. Language Model Role
+
+Language models are used in two roles:
+
+1. **Multimodal reasoning** (image + text → output) via VLMs
+2. **Interpretation and explanation** for document extraction results
+
+In both cases:
+- hallucinations must be avoided
+- outputs must reference provided evidence
+
+---
+
+## 7. Recommended Baseline Configuration
+
+**Primary (default):**
+- VLM image analyzer (image + prompt)
+
+**Secondary (optional):**
+- Vision-only classifier or embedding model
+
+**Document path:**
+- Document analyzer + grounded language interpretation
+
+This configuration best demonstrates applied multimodal system design.
+
+---
+
+## 8. Optional Extensions
+
+- Fine-tuning vision encoders for domain adaptation
+- Multimodal question-answering endpoint
+- Visual grounding / citation extraction
+
+These extensions are intentionally out of scope for the core project.
+
+---
+
+## 9. Why This Choice Matters
+
+This modeling strategy demonstrates:
+- correct understanding of what a VLM actually is
+- separation of perception, reasoning, and interpretation
+- production-aware tradeoffs around cost, latency, and control
+
+It avoids the common mistake of presenting a vision classifier + LLM as a VLM.
 
 ---
 
