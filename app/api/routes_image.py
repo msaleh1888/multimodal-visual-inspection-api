@@ -1,18 +1,30 @@
+import time
 import logging
 from fastapi import APIRouter, File, UploadFile, Form, HTTPException
 
 from app.config import settings
 from app.preprocessing.image_preprocess import load_and_preprocess_image
+
 from app.analyzers.vlm_base import VLMInput
 from app.analyzers.vlm_factory import create_vlm_analyzer
 from app.analyzers.vlm_errors import VLMTimeout, VLMInvalidOutput
 from app.analyzers.vlm_runner import run_with_timeout
-from app.observability.metrics import VLM_REQUESTS_TOTAL, VLM_INFERENCE_SECONDS
+
+from app.analyzers.vision_base import VisionInput
+from app.analyzers.vision_factory import create_vision_analyzer
+
+from app.observability.metrics import (
+    VLM_REQUESTS_TOTAL,
+    VLM_INFERENCE_SECONDS,
+    VISION_REQUESTS_TOTAL,
+    VISION_INFERENCE_SECONDS,
+)
 
 router = APIRouter(prefix="/analyze", tags=["analyze"])
 
 # Instantiate once (safe + production style)
 _vlm = create_vlm_analyzer()
+_vision = create_vision_analyzer()
 
 logger = logging.getLogger(__name__)
 
@@ -105,24 +117,66 @@ async def analyze_image(
     )
 
     if mode == "baseline":
-        # Basic log: baseline requested
+        v_in = VisionInput(top_k=5, return_embedding=True, embedding_preview_len=16)
+
+        model_label = getattr(_vision, "model_name", "unknown")
+        t0 = time.perf_counter()
+
+        try:
+            v_res = _vision.analyze(img.pil, v_in)
+            duration_s = time.perf_counter() - t0
+
+            VISION_REQUESTS_TOTAL.labels(result="ok", model=model_label).inc()
+            VISION_INFERENCE_SECONDS.labels(model=model_label).observe(duration_s)
+
+        except Exception as e:
+            duration_s = time.perf_counter() - t0
+            VISION_REQUESTS_TOTAL.labels(result="failed", model=model_label).inc()
+            VISION_INFERENCE_SECONDS.labels(model=model_label).observe(duration_s)
+
+            logger.exception("image_analyze baseline_failed filename=%s", file.filename)
+            raise HTTPException(
+                status_code=502,
+                detail={"code": "baseline_failed", "message": str(e)},
+            )
+
+        top1 = v_res.top_k[0] if v_res.top_k else None
+        finding = f"baseline_top1: {top1.label}" if top1 else "baseline_no_prediction"
+        confidence = float(top1.prob) if top1 else 0.0
+
         logger.info(
-            "image_analyze baseline_not_implemented filename=%s content_type=%s",
+            "image_analyze baseline_ok model=%s top1=%s conf=%.3f duration_ms=%d filename=%s",
+            v_res.model_name,
+            top1.label if top1 else "n/a",
+            confidence,
+            int(duration_s * 1000),
             file.filename,
-            file.content_type,
         )
+
         return {
-            "finding": "baseline_not_implemented",
-            "confidence": 0.0,
+            "finding": finding,
+            "confidence": confidence,
             "details": {
                 "mode": "baseline",
-                "model": {"name": "n/a", "version": "n/a"},
+                "baseline": {
+                    "top_k": [{"label": p.label, "prob": float(p.prob)} for p in v_res.top_k],
+                    "embedding": (
+                        {"dim": v_res.embedding.dim, "preview": v_res.embedding.preview}
+                        if v_res.embedding is not None
+                        else None
+                    ),
+                },
+                "model": {"name": v_res.model_name, "version": v_res.model_version},
             },
-            "explanation": "Baseline mode is not implemented yet. Use mode=vlm.",
-            "recommendation": "Use mode=vlm with an optional prompt/task.",
-            "warnings": ["baseline_mode_not_available"],
+            "explanation": (
+                "Vision-only baseline output (ImageNet pretrained). "
+                "Useful for fast sanity checks and debugging; not multimodal reasoning."
+            ),
+            "recommendation": "Use mode=vlm for grounded multimodal explanations and recommendations.",
+            "warnings": ["baseline_imagenet_labels_may_not_match_domain"],
         }
 
+    # --- VLM path ---
     vlm_input = VLMInput(
         prompt=prompt,
         task=task or None,
@@ -131,7 +185,6 @@ async def analyze_image(
 
     result, attempts_used, duration_s = await _run_vlm_with_retries(img.pil, vlm_input)
 
-    # Basic log: VLM success
     logger.info(
         "image_analyze vlm_ok model=%s attempts=%d duration_ms=%d filename=%s has_prompt=%s has_task=%s",
         getattr(_vlm, "model_name", "unknown"),
