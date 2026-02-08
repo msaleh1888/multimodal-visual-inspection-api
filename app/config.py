@@ -15,8 +15,7 @@ class Settings(BaseSettings):
     # VLM configuration
     vlm_provider: str = "mock"  # "mock" | "transformers"
     vlm_model_id: str = "llava-hf/llava-1.5-7b-hf"
-
-    class Config:
-        env_file = ".env"
+    vlm_timeout_seconds: int = 20
+    vlm_max_retries: int = 2
 
 settings = Settings()
