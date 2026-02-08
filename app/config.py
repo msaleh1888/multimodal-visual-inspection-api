@@ -12,5 +12,11 @@ class Settings(BaseSettings):
     max_document_mb: int = 20
     max_pdf_pages: int = 10
 
+    # VLM configuration
+    vlm_provider: str = "mock"  # "mock" | "transformers"
+    vlm_model_id: str = "llava-hf/llava-1.5-7b-hf"
+
+    class Config:
+        env_file = ".env"
 
 settings = Settings()

@@ -4,12 +4,13 @@ from app.config import settings
 from app.preprocessing.image_preprocess import load_and_preprocess_image
 from app.analyzers.vlm_base import VLMInput
 from app.analyzers.vlm_mock import MockVLMAnalyzer
+from app.analyzers.vlm_factory import create_vlm_analyzer
 
 router = APIRouter(prefix="/analyze", tags=["analyze"])
 
 
 # Start with mock to guarantee it runs everywhere.
-_vlm = MockVLMAnalyzer()
+_vlm = create_vlm_analyzer()
 
 @router.post("/image")
 async def analyze_image(
