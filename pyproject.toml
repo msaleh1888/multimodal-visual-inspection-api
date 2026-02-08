@@ -9,7 +9,10 @@ dependencies = [
   "pydantic>=2.7",
   "pydantic-settings>=2.3",
   "pillow>=10.0",
-  "numpy>=1.26"
+  "numpy>=1.26",
+  "transformers>=4.42",
+  "accelerate>=0.33",
+  "torch>=2.2"
 ]
 
 [tool.pytest.ini_options]
