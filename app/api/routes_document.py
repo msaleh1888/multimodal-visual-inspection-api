@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import io
 import uuid
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Depends, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
+from PIL import Image
 
 from app.preprocessing.document import (
     preprocess_document,
@@ -19,7 +22,6 @@ from app.analyzers.document_analyzer import (
     DocumentExtractionResult,
     ExtractedTable,
     PageExtraction,
-    NoOpDocumentAnalyzer,
 )
 
 router = APIRouter(prefix="/analyze", tags=["analyze"])
@@ -29,11 +31,73 @@ DocumentMode = Literal["fast", "full"]
 
 def get_document_analyzer() -> DocumentAnalyzer:
     """
-    Dependency provider.
-    For now: NoOp analyzer so endpoint works without external VLM config.
-    Replace later with VLMDocumentAnalyzer wired to your real VLM client.
+    Dependency provider for document analysis.
+
+    ✅ Fix: use VLM for document extraction instead of NoOp.
+    We reuse the SAME VLM factory used by the image pipeline, so the provider/model
+    stays configurable via settings (mock vs transformers).
+
+    Note:
+    - VLMDocumentAnalyzer expects JSON-only outputs. If the underlying VLM returns
+      non-JSON, the analyzer will fall back to empty extraction + warnings (safe behavior).
     """
-    return NoOpDocumentAnalyzer(engine_name="noop", engine_version="0")
+    # Local imports to avoid heavy import-time side effects and keep startup flexible.
+    from app.analyzers.vlm_factory import create_vlm_analyzer
+    from app.analyzers.vlm_document_analyzer import VLMDocumentAnalyzer
+
+    # Some repos have VLMInput in different places; keep this import inside and explicit.
+    from app.analyzers.vlm_base import VLMInput  # used by the image VLM analyzers
+    from app.config import settings
+
+    class VLMClientAdapter:
+        """
+        Adapter to bridge:
+          - existing image VLM interface: vlm.analyze(PIL.Image, VLMInput) -> result.raw_output
+        into:
+          - document VLM client interface expected by VLMDocumentAnalyzer:
+              analyze_image(prompt, image_b64, mime_type, model) -> (text, meta)
+        """
+
+        def __init__(self, vlm_analyzer: Any):
+            self._vlm = vlm_analyzer
+
+        def analyze_image(
+            self,
+            *,
+            prompt: str,
+            image_b64: str,
+            mime_type: str,
+            model: Optional[str] = None,
+        ) -> Tuple[str, Dict[str, Any]]:
+            # Decode base64 image to PIL
+            img_bytes = base64.b64decode(image_b64.encode("utf-8"))
+            img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+            # Call the underlying VLM analyzer
+            vlm_input = VLMInput(prompt=prompt, task=None, question=None)
+            res = self._vlm.analyze(img, vlm_input)
+
+            # VLMDocumentAnalyzer expects the model to return JSON-only text.
+            # Our internal normalizer will validate/parse; if invalid -> safe fallback.
+            text = getattr(res, "raw_output", None) or ""
+
+            meta = {
+                "model": getattr(res, "model_name", None)
+                or getattr(self._vlm, "model_name", None)
+                or (model or "unknown"),
+                "version": getattr(res, "model_version", None)
+                or getattr(self._vlm, "model_version", None)
+                or "unknown",
+            }
+            return text, meta
+
+    vlm = create_vlm_analyzer()
+    client = VLMClientAdapter(vlm)
+
+    # This is just a label passed through; actual model selection is handled inside create_vlm_analyzer()
+    model_label = getattr(settings, "vlm_model_id", None)
+
+    return VLMDocumentAnalyzer(client=client, model_name=model_label)
 
 
 @router.post("/document")
