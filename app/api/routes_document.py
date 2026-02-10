@@ -170,6 +170,8 @@ def _to_api_contract_document_response(result: DocumentExtractionResult) -> Dict
     doc_conf = _confidence_to_number(result.doc_confidence)
 
     finding = f"Extracted {len(extracted_fields)} field(s) and {len(tables)} table(s) from the document."
+    
+    # Default (fallback) narrative text if no grounding exists
     explanation = (
         "The system processed the document page-by-page and extracted visible fields and tables. "
         "Low-confidence or unreadable content is surfaced in warnings."
@@ -178,18 +180,45 @@ def _to_api_contract_document_response(result: DocumentExtractionResult) -> Dict
         "Review extracted values and validate items with low confidence. "
         "If the scan is blurry or incomplete, re-upload a higher-quality document."
     )
-
+    
+    # If the pipeline produced grounded explanation, prefer it.
+    grounding = None
+    try:
+        grounding = (result.engine_meta or {}).get("grounding")
+    except Exception:
+        grounding = None
+    
+    if isinstance(grounding, dict):
+        # Only override if keys exist and are strings
+        g_exp = grounding.get("explanation")
+        g_rec = grounding.get("recommendation")
+        if isinstance(g_exp, str) and g_exp.strip():
+            explanation = g_exp
+        if isinstance(g_rec, str) and g_rec.strip():
+            recommendation = g_rec
+    
     model_name = str(result.engine_meta.get("pipeline", "document_pipeline"))
     model_version = str(result.engine_meta.get("version", "v1"))
-
+    
+    details: Dict[str, Any] = {
+        "extracted_fields": extracted_fields,
+        "tables": tables,
+        "model": {"name": model_name, "version": model_version},
+    }
+    
+    # Keep warnings separate (your chosen approach). Add grounding metadata under details.
+    if isinstance(grounding, dict):
+        details["grounding"] = {
+            "risk_level": grounding.get("risk_level"),
+            "assumptions": grounding.get("assumptions"),
+            "limitations": grounding.get("limitations"),
+            "llm_model": grounding.get("llm_model"),
+        }
+    
     return {
         "finding": finding,
         "confidence": doc_conf,
-        "details": {
-            "extracted_fields": extracted_fields,
-            "tables": tables,
-            "model": {"name": model_name, "version": model_version},
-        },
+        "details": details,
         "explanation": explanation,
         "recommendation": recommendation,
         "warnings": result.warnings or [],

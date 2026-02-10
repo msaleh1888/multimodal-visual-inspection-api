@@ -17,6 +17,9 @@ from app.analyzers.vlm_runner import run_with_timeout
 from app.analyzers.vision_base import VisionInput
 from app.analyzers.vision_factory import create_vision_analyzer
 
+from app.explainers.grounded_explainer import generate_grounded_explanation
+from app.llm.llm_factory import create_llm_client
+
 from app.observability.metrics import (
     VLM_REQUESTS_TOTAL,
     VLM_INFERENCE_SECONDS,
@@ -242,34 +245,79 @@ class ImageAnalysisPipeline:
 
     async def _run_vlm(self, image_pil, vlm_input: VLMInput) -> ImagePipelineResult:
         result, attempts_used, duration_s = await _run_vlm_with_retries(image_pil, vlm_input)
-
+	
         logger.info(
-            "vlm_ok model=%s attempts=%d duration_ms=%d has_prompt=%s has_task=%s",
-            getattr(_vlm, "model_name", "unknown"),
-            attempts_used,
-            int(duration_s * 1000),
-            bool((vlm_input.prompt or "").strip()),
-            bool((vlm_input.task or "").strip()),
-        )
-
-        details = {
-            "vlm": {
-                "task": vlm_input.task or "",
-                "prompt": vlm_input.prompt or "",
-                "raw_output": getattr(result, "raw_output", None),
-            }
-        }
-
+			"vlm_ok model=%s attempts=%d duration_ms=%d has_prompt=%s has_task=%s",
+			getattr(_vlm, "model_name", "unknown"),
+			attempts_used,
+			int(duration_s * 1000),
+			bool((vlm_input.prompt or "").strip()),
+			bool((vlm_input.task or "").strip()),
+		)
+	
+		# Base details (what we already return today)
+        details: Dict[str, Any] = {
+			"vlm": {
+				"task": vlm_input.task or "",
+				"prompt": vlm_input.prompt or "",
+				"raw_output": getattr(result, "raw_output", None),
+			}
+		}
+	
+        finding = getattr(result, "finding", "")
+        confidence = float(getattr(result, "confidence", 0.0))
+        explanation = getattr(result, "explanation", "")
+        recommendation = getattr(result, "recommendation", "")
+        warnings = list(getattr(result, "warnings", []) or [])
+	
+		# -----------------------------
+		# Milestone 4 / Issue #14: grounded explainer (best-effort)
+		# -----------------------------
+        try:
+            facts = {
+				"overall_confidence": confidence,
+				"warnings": warnings or [],
+				"extracted_fields": {
+					"finding": {"value": finding, "confidence": confidence},
+				},
+				"tables": [],
+			}
+	
+            llm = create_llm_client()
+            grounding = generate_grounded_explanation(
+				llm=llm,
+				task_type="image",
+				mode="vlm",
+				facts=facts,
+				request_id=None,
+			)
+	
+			# Prefer grounded explanation/recommendation
+            explanation = grounding["explanation"]
+            recommendation = grounding["recommendation"]
+	
+			# Keep warnings separate; attach grounding metadata for debugging/visibility
+            details["grounding"] = {
+				"risk_level": grounding.get("risk_level"),
+				"assumptions": grounding.get("assumptions"),
+				"limitations": grounding.get("limitations"),
+				"llm_model": getattr(llm, "model_id", "unknown"),
+			}
+	
+        except Exception as e:
+			# Never fail the endpoint due to explainer issues
+            warnings.append(f"explainer: {type(e).__name__}: {e}")
+	
         return ImagePipelineResult(
-            finding=getattr(result, "finding", ""),
-            confidence=float(getattr(result, "confidence", 0.0)),
-            details=details,
-            explanation=getattr(result, "explanation", ""),
-            recommendation=getattr(result, "recommendation", ""),
-            warnings=list(getattr(result, "warnings", []) or []),
-            mode="vlm",
-            model_name=getattr(result, "model_name", "unknown"),
-            model_version=getattr(result, "model_version", "unknown"),
-            duration_ms=int(duration_s * 1000),
-            attempts_used=attempts_used,
-        )
+			finding=finding,
+			confidence=confidence,
+			details=details,
+			explanation=explanation,
+			recommendation=recommendation,
+			warnings=warnings,
+			mode="vlm",
+			model_name=getattr(result, "model_name", "unknown"),
+			model_version=getattr(result, "model_version", "unknown"),
+			duration_ms=int(duration_s * 1000),
+			attempts_used=attempts_used,
+		)

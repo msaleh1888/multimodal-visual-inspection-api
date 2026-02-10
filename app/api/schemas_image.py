@@ -49,6 +49,17 @@ class BaselineDetails(BaseModel):
 
 
 # ---------
+# Grounding details (LLM explainer metadata)
+# ---------
+
+class GroundingDetails(BaseModel):
+    risk_level: Optional[str] = None
+    assumptions: List[str] = Field(default_factory=list)
+    limitations: List[str] = Field(default_factory=list)
+    llm_model: Optional[str] = None
+
+
+# ---------
 # Details union (mode + model always present)
 # ---------
 
@@ -58,6 +69,7 @@ class AnalyzeImageDetails(BaseModel):
     mode: Literal["vlm", "baseline"]
     model: ModelInfo
     meta: Optional[MetaInfo] = None
+    grounding: Optional[GroundingDetails] = None
 
     # exactly one of these should exist depending on mode
     vlm: Optional[VLMDetails] = None
