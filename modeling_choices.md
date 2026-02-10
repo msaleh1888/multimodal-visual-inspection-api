@@ -1,151 +1,183 @@
-# Modeling Choices
+# Modeling Choices — Multimodal Visual Inspection API
 
-## 1. Purpose
-
-This document explains the modeling strategy for the project, with a **VLM-first design**.
-
-**Primary goal:** demonstrate how modern systems use **Vision–Language Models (VLMs)** to perform multimodal reasoning directly over images and text.
-
-Vision-only models are supported **only as optional baselines** for debugging, evaluation, and comparison.
+This document explains **why specific modeling approaches were chosen**, how they are used in the system,
+and what trade-offs they introduce. The focus is on **engineering reasoning**, not model hype.
 
 ---
 
-## 2. Core Design Principles
+## Design Principles
 
-1. **VLM-first for image understanding**
-   - Image reasoning is performed by a multimodal model that conditions language generation on visual input.
-   - The LLM must "see" the image, not a summary of labels.
+All modeling choices follow these principles:
 
-2. **Adapters over tight coupling**
-   - All models (VLMs, vision backbones, document engines) are accessed via adapters.
-   - This allows safe swapping of models without changing pipelines or APIs.
-
-3. **Grounded language output**
-   - Language models must produce outputs grounded in visual or extracted evidence.
-   - Uncertainty must be surfaced explicitly.
-
-4. **Production realism**
-   - Pre-trained models are used.
-   - No training of foundation models from scratch.
+- Separate *workflow logic* from *model logic*
+- Prefer adapters and interfaces over hard-coded models
+- Make uncertainty and failure explicit
+- Optimize for debuggability and testability before accuracy
 
 ---
 
-## 3. Image Analysis — Primary (VLM)
+## Image Analysis Models
 
-### What is used
+### Baseline Vision Model (CNN)
 
-A **Vision–Language Model** capable of accepting:
-- image input
-- optional text prompt or task instruction
+**Purpose**
+- Fast sanity check
+- Debugging and fallback
+- Cost-efficient inference
 
-and producing:
-- natural-language explanation
-- recommendation or next steps
-- confidence / uncertainty signal
+**Characteristics**
+- Vision-only (no language reasoning)
+- Returns top-k class predictions
+- Optionally returns embeddings
 
-Examples of suitable model families:
-- CLIP-based multimodal LLMs
-- Vision-capable LLM APIs
-- Open-source VLMs with image-token support
+**Why this exists**
+- Provides a stable reference point
+- Allows comparison against VLM output
+- Useful when VLM is unavailable or too slow
 
-The exact model choice is abstracted behind a `VLMImageAnalyzer` adapter.
-
----
-
-### Why this is the default
-
-- True multimodal reasoning
-- No lossy intermediate representation (e.g. labels)
-- Matches how VLM-powered products are actually built
+**Trade-offs**
+- No semantic reasoning
+- Labels may not match domain concepts
 
 ---
 
-## 4. Image Analysis — Secondary (Vision-Only Baseline)
+## Visual-Language Models (VLM)
 
-### What it is
+### Role in the System
 
-A pre-trained vision model (e.g. ResNet / ViT) used to:
-- produce labels or embeddings
-- inspect raw perception quality
-- compare against VLM behavior
+VLMs are used for:
+- Image understanding with natural language output
+- Page-level document analysis
+- Structured extraction (fields, tables, confidence)
 
-### Why it exists
-
-- Debugging and evaluation
-- Performance benchmarking
-- Failure analysis
-
-### Important constraint
-
-This path is:
-- **never the default**
-- **never presented as the main solution**
+They form the **core reasoning engine** of the system.
 
 ---
 
-## 5. Document Analysis Modeling
+### VLM Adapter Pattern
 
-Document analysis follows a different but complementary pattern:
+VLMs are accessed through a strict adapter interface:
 
-1. **Document understanding** (OCR, layout, key-value extraction)
-2. **Language interpretation** over extracted structured data
+- Input: image + prompt/task
+- Output: structured JSON only
+- Errors: timeout, invalid output, model failure
 
-This separation is intentional:
-- extraction must be deterministic
-- interpretation must be grounded
-
-VLM-based document Q&A may be explored as a future extension.
-
----
-
-## 6. Language Model Role
-
-Language models are used in two roles:
-
-1. **Multimodal reasoning** (image + text → output) via VLMs
-2. **Interpretation and explanation** for document extraction results
-
-In both cases:
-- hallucinations must be avoided
-- outputs must reference provided evidence
+**Why**
+- Prevents pipelines from depending on vendor-specific APIs
+- Allows local mocks and tests
+- Enables future model swapping (local, hosted, open-source)
 
 ---
 
-## 7. Recommended Baseline Configuration
+### Output Constraints
 
-**Primary (default):**
-- VLM image analyzer (image + prompt)
+VLM outputs are constrained by:
+- Explicit prompt instructions
+- Required JSON schema
+- Validation and retry logic
+- Prompt tightening on retries
 
-**Secondary (optional):**
-- Vision-only classifier or embedding model
-
-**Document path:**
-- Document analyzer + grounded language interpretation
-
-This configuration best demonstrates applied multimodal system design.
+This reduces hallucinations and parsing failures.
 
 ---
 
-## 8. Optional Extensions
+## Document Analysis Models
 
-- Fine-tuning vision encoders for domain adaptation
-- Multimodal question-answering endpoint
-- Visual grounding / citation extraction
+### Page-Level VLM Processing
 
-These extensions are intentionally out of scope for the core project.
+Documents are processed as **independent pages**.
+
+**Why**
+- Limits blast radius of failures
+- Enables parallelism
+- Keeps hallucinations localized
+
+Each page returns:
+- extracted fields
+- tables
+- page confidence
+- warnings
+
+Document-level aggregation happens in the pipeline, not the model.
 
 ---
 
-## 9. Why This Choice Matters
+## LLM Explainer
 
-This modeling strategy demonstrates:
-- correct understanding of what a VLM actually is
-- separation of perception, reasoning, and interpretation
-- production-aware tradeoffs around cost, latency, and control
+### Purpose
 
-It avoids the common mistake of presenting a vision classifier + LLM as a VLM.
+The LLM explainer is **not** responsible for perception.
+It only:
+- Explains pipeline results
+- Generates recommendations
+- Reports uncertainty
 
 ---
 
-**End of Modeling Choices**
+### Grounded Explainer Design
 
+The explainer:
+- Consumes only structured pipeline output
+- Is forbidden from introducing new facts
+- Outputs fixed JSON
+
+Grounding mechanisms:
+- Prompt instructions: use only provided data
+- Strict JSON schema
+- Low temperature
+- Explicit limitation reporting
+
+---
+
+## NoOp and Mock Models
+
+### Why They Exist
+
+- Enable test isolation
+- Allow development without external dependencies
+- Support deterministic unit tests
+
+Used in:
+- Unit tests
+- Local development
+- CI pipelines
+
+---
+
+## Model Configuration and Selection
+
+Model selection is centralized in factory modules:
+- `vision_factory.py`
+- `vlm_factory.py`
+
+This allows:
+- Environment-based model switching
+- Safe defaults
+- Explicit version tracking
+
+---
+
+## Known Limitations
+
+- No automatic model benchmarking yet
+- VLM accuracy depends heavily on prompt quality
+- Grounding reduces but does not eliminate hallucinations
+
+---
+
+## Future Improvements
+
+Planned enhancements:
+- Quantitative model evaluation
+- Model comparison dashboards
+- Better confidence calibration
+- Domain-specific fine-tuning
+
+---
+
+## Summary
+
+This system treats models as **replaceable components**, not core logic.
+Reliability, clarity, and controllability are prioritized over raw model power.
+
+---

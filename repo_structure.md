@@ -1,235 +1,212 @@
-# Repository Structure
+# Repository Structure — Multimodal Visual Inspection API
 
-This repository follows a **production-oriented, modular layout** separating API concerns, orchestration logic, model adapters, preprocessing, and observability.
+This document describes the repository layout and the responsibility of each directory.
+The structure reflects the architectural separation between API, pipelines, analyzers, and models.
 
 ---
 
-## Root
+## Top-Level Layout
 
 ```
 .
 ├── app/
-├── samples/
-├── scripts/
 ├── tests/
 ├── README.md
-├── requirements.md
-├── architecture.md
-├── api_contract.md
-├── modeling_choices.md
-├── evaluation_plan.md
-├── repo_structure.md
-└── pyproject.toml / requirements.txt
+├── requirements.txt
+└── pyproject.toml
 ```
 
 ---
 
-## `app/` — Application Code
+## Application Code (`app/`)
 
 ```
 app/
-├── main.py
-├── config.py
-├── logging.py
-├── middleware/
-├── utils/
 ├── api/
-├── preprocessing/
 ├── analyzers/
+├── explainers/
+├── middleware/
+├── observability/
 ├── pipelines/
-└── observability/
+├── preprocessing/
+├── config.py
+├── main.py
 ```
 
----
-
-### `app/main.py`
-- FastAPI application factory  
-- Global middleware wiring (request IDs, error handling)  
-- Router registration  
-- Logging initialization  
+Each subdirectory represents a **single architectural responsibility**.
 
 ---
 
-### `app/config.py`
-- Centralized configuration using `pydantic-settings`
-- Environment-driven settings (VLM provider, limits, timeouts)
+## API Layer (`app/api/`)
+
+```
+api/
+├── routes_image.py
+├── routes_document.py
+├── schemas_image.py
+├── error_handlers.py
+├── health.py
+```
+
+Responsibilities:
+- HTTP endpoints
+- Request parsing
+- Response serialization
+- Error mapping
+
+Design rules:
+- No model logic
+- No orchestration logic
+- Strict schema enforcement
 
 ---
 
-### `app/logging.py`
-- Central logging configuration
-- Structured logs with request IDs
-- Log level controlled via config
+## Analyzers (`app/analyzers/`)
+
+```
+analyzers/
+├── document_analyzer.py
+├── vlm_base.py
+├── vlm_factory.py
+├── vlm_runner.py
+├── vlm_errors.py
+├── vlm_transformers.py
+├── vision_base.py
+├── vision_factory.py
+```
+
+Responsibilities:
+- Adapt pipelines to specific model APIs
+- Enforce input/output contracts
+- Handle model-specific errors
+
+Notes:
+- Pipelines depend on analyzer interfaces, not implementations
+- Factories control which model is active
 
 ---
 
-### `app/middleware/`
+## Explainers (`app/explainers/`)
+
+```
+explainers/
+├── grounded_explainer.py
+```
+
+Responsibilities:
+- Generate explanations and recommendations using LLMs
+- Produce grounding metadata (risk, assumptions, limitations)
+- Never introduce new facts beyond pipeline output
+
+---
+
+## Pipelines (`app/pipelines/`)
+
+```
+pipelines/
+├── image_pipeline.py
+├── document_pipeline.py
+```
+
+Responsibilities:
+- Orchestrate multi-step workflows
+- Apply retries, timeouts, and resilience policies
+- Aggregate results into stable outputs
+
+Design rule:
+- Pipelines are model-agnostic
+
+---
+
+## Preprocessing (`app/preprocessing/`)
+
+```
+preprocessing/
+├── document.py
+├── image_preprocess.py
+```
+
+Responsibilities:
+- Validate and normalize raw inputs
+- Convert PDFs into page images
+- Prepare data for pipelines
+
+---
+
+## Middleware (`app/middleware/`)
 
 ```
 middleware/
 ├── request_id.py
 ```
 
-- Request ID middleware
-- Ensures every request has a unique correlation ID
+Responsibilities:
+- Inject and propagate request IDs
+- Ensure traceability across logs and metrics
 
 ---
 
-### `app/utils/`
-
-```
-utils/
-├── request_id.py
-├── logging_filter.py
-```
-
-- Request ID context utilities
-- Logging filters to inject request IDs into logs
-
----
-
-## `app/api/` — HTTP API Layer (Thin)
-
-```
-api/
-├── routes_image.py
-├── routes_document.py
-├── health.py
-```
-
-- Responsible only for:
-  - HTTP request parsing
-  - File upload handling
-  - Calling pipelines
-  - Returning JSON responses
-- No ML logic or orchestration here
-
----
-
-## `app/preprocessing/`
-
-```
-preprocessing/
-├── image_preprocess.py
-├── document_preprocess.py
-```
-
-- Input validation and preprocessing
-- Image decoding, size limits, EXIF correction
-- Document normalization and splitting
-
----
-
-## `app/analyzers/` — Model Adapters
-
-```
-analyzers/
-├── vlm_base.py
-├── vlm_factory.py
-├── vlm_mock.py
-├── vlm_transformers.py
-├── vlm_runner.py
-├── vlm_errors.py
-│
-├── vision_base.py
-├── vision_resnet.py
-├── vision_factory.py
-```
-
-### VLM analyzers
-- Adapter-based design for Vision–Language Models
-- Supports:
-  - Mock VLM (dev)
-  - Transformers-based VLMs
-- Retry, timeout, and invalid-output handling
-
-### Vision-only analyzers (baseline)
-- ResNet18 ImageNet-pretrained classifier
-- Provides:
-  - Top-K predictions
-  - Embedding extraction (512-dim)
-- Used for debugging, sanity checks, and potential fallback
-
----
-
-## `app/pipelines/` — Orchestration Layer
-
-```
-pipelines/
-├── image_pipeline.py
-```
-
-- Core orchestration logic for image analysis
-- Responsibilities:
-  - Route between VLM and baseline modes
-  - Handle retries, timeouts, and failures
-  - Emit metrics and logs
-  - Return normalized pipeline results
-- Keeps API layer thin and policy-free
-
----
-
-## `app/observability/`
+## Observability (`app/observability/`)
 
 ```
 observability/
 ├── metrics.py
-├── metrics_route.py
 ```
 
-- Prometheus-compatible metrics
-- Tracks:
-  - Request counts (VLM + baseline)
-  - Inference latency histograms
-- `/metrics` endpoint exposed for scraping
+Responsibilities:
+- Define Prometheus-style metrics
+- Track model usage, latency, and failures
 
 ---
 
-## `samples/`
+## Configuration
 
 ```
-samples/
-├── images/
-│   └── sample.jpg
-├── documents/
+config.py
 ```
 
-- Sample inputs for local testing and demos
-- Used for smoke tests and manual validation
+Responsibilities:
+- Centralized runtime configuration
+- Environment-based settings
 
 ---
 
-## `scripts/`
+## Entry Point
 
 ```
-scripts/
+main.py
 ```
 
-- (Optional) Local utilities, experiments, or smoke tests
-- Not required for core runtime
+Responsibilities:
+- FastAPI app creation
+- Router registration
+- Middleware setup
 
 ---
 
-## `tests/`
+## Tests (`tests/`)
 
 ```
 tests/
+├── analyzers/
+├── api/
+├── contract/
+├── explainers/
+├── integration/
+├── pipelines/
+├── preprocessing/
+├── unit/
 ```
 
-- Unit tests and integration tests (planned in later milestones)
-- Will cover:
-  - Preprocessing
-  - Pipelines
-  - API endpoints
+Test categories mirror the application layers.
 
 ---
 
-## Design Summary
+## Key Structural Invariants
 
-- **API layer**: thin, stable
-- **Pipelines**: orchestration and policy
-- **Analyzers**: model adapters
-- **Observability**: first-class (metrics + logs)
-- **Docs**: aligned with real implementation
+- One directory = one responsibility
+- API layer never imports model backends directly
+- Pipelines isolate workflow complexity
+- Tests mirror production architecture
 
-This structure mirrors real-world production ML services and is intentionally designed for extensibility and testability.
+---

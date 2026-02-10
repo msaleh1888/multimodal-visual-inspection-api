@@ -1,173 +1,172 @@
-# Evaluation Plan (VLM-First)
+# Evaluation Plan — Multimodal Visual Inspection API
 
-## 1. Purpose
-
-This document defines how the system is evaluated to ensure:
-- correct multimodal reasoning
-- grounded outputs
-- robustness to real-world inputs
-- production-readiness
-
-The evaluation strategy is **VLM-aware** and explicitly avoids treating image analysis as a pure classification problem.
+This document describes how the system is evaluated from an engineering perspective.
+The focus is on **correctness, reliability, and safety**, not only model accuracy.
 
 ---
 
-## 2. Evaluation Principles
+## Evaluation Goals
 
-1. **Grounding over fluency**
-   - Outputs must be supported by visual or extracted evidence.
-   - Fluent but unsupported explanations are considered failures.
+The evaluation strategy aims to answer:
 
-2. **Uncertainty awareness**
-   - Low-quality or ambiguous inputs must surface uncertainty.
-   - Overconfident answers are penalized.
-
-3. **Mode-aware evaluation**
-   - VLM mode and vision-only baseline mode are evaluated differently.
-   - Metrics must match the modeling approach.
+- Does the system return valid responses under all expected conditions?
+- Are failures isolated and observable?
+- Is hallucination risk surfaced and controlled?
+- Can changes be made without breaking contracts?
 
 ---
 
-## 3. Image Analysis Evaluation (VLM Mode — Primary)
+## What Is Evaluated
 
-### 3.1 Multimodal Grounding Tests
+### 1. Preprocessing Correctness
 
-**Goal:** Ensure language output is grounded in visual input.
+Validated via unit tests.
 
-Checks:
-- Does the explanation reference visible attributes (objects, colors, spatial relations)?
-- Are claims consistent with the image content?
-- Are absent elements explicitly not hallucinated?
+Checks include:
+- File type validation
+- Size limits
+- Corrupted input handling
+- Deterministic resizing and normalization
 
-Examples:
-- Image without defects → no defect mentioned
-- Blurry image → uncertainty surfaced
-
----
-
-### 3.2 Hallucination Detection
-
-**Goal:** Detect unsupported or fabricated claims.
-
-Checks:
-- Mentions of objects not present in the image
-- Inference of hidden/internal states without evidence
-- Overly specific claims from low-resolution images
-
-Evaluation:
-- Manual review for early iterations
-- Rule-based heuristics for common hallucination patterns
+Relevant tests:
+- `tests/preprocessing/`
 
 ---
 
-### 3.3 Prompt Sensitivity & Robustness
+### 2. Analyzer Behavior
 
-**Goal:** Ensure stable behavior across prompt variations.
+Analyzers are evaluated in isolation using mocks and stubs.
 
-Checks:
-- Equivalent prompts produce consistent findings
-- Prompt injection attempts do not override visual evidence
-- Empty or vague prompts still produce safe, minimal outputs
+Checks include:
+- Correct input/output mapping
+- Proper error propagation
+- Handling of invalid model output
+- Timeout behavior
 
----
-
-### 3.4 Confidence Calibration
-
-**Goal:** Align confidence scores with output reliability.
-
-Checks:
-- Clear images → higher confidence
-- Occluded/low-quality images → lower confidence
-- Ambiguous cases → explicit warnings
+Relevant tests:
+- `tests/analyzers/`
 
 ---
 
-## 4. Image Analysis Evaluation (Vision-Only Baseline — Optional)
+### 3. Pipeline Orchestration
 
-These metrics apply **only** when baseline mode is enabled.
+Pipelines are evaluated as deterministic workflows.
 
-### 4.1 Perception Accuracy
+Checks include:
+- Page-level isolation (document pipeline)
+- Partial failure tolerance
+- Warning aggregation
+- Confidence aggregation logic
 
-- Top-k label sanity checks
-- Gross misclassification detection
-
-### 4.2 Stability
-
-- Consistent predictions for the same image
-- Sensitivity to small perturbations
-
-> Note: Baseline metrics are **not** the primary success signal for the project.
+Relevant tests:
+- `tests/pipelines/`
 
 ---
 
-## 5. Document Analysis Evaluation
+### 4. API Contract Compliance
 
-### 5.1 Extraction Accuracy
+The API is evaluated against strict schemas.
 
-- Correct field extraction
-- Table structure preservation
-- Confidence score reasonableness
+Checks include:
+- Extra fields are rejected
+- Missing optional fields are allowed
+- Error responses match the contract
 
-### 5.2 Interpretation Grounding
-
-- Explanations reference extracted fields
-- Missing or low-confidence fields trigger warnings
-- No invented values
-
----
-
-## 6. End-to-End API Evaluation
-
-### 6.1 Error Handling
-
-- Unsupported file types → `400`
-- Oversized payloads → `413`
-- Corrupt inputs → `422`
-- Downstream failures → `502` / `504`
-
-### 6.2 Latency & Stability
-
-- Single-request latency within acceptable bounds
-- No crashes on malformed inputs
-- Graceful degradation on model failure
+Relevant tests:
+- `tests/api/`
+- `tests/contract/`
 
 ---
 
-## 7. Regression & Change Safety
+### 5. Grounding and Hallucination Control
 
-- Snapshot tests for representative images/documents
-- Compare outputs before/after model or prompt changes
-- Manual review of diffs for reasoning changes
+The explainer is evaluated qualitatively and structurally.
 
----
+Checks include:
+- Output is strictly JSON
+- No new facts are introduced
+- Limitations and assumptions are present when confidence is low
 
-## 8. What Is Explicitly NOT Evaluated
-
-- Medical, legal, or regulated correctness
-- Dataset-level accuracy benchmarks
-- Competitive leaderboard performance
+Relevant tests:
+- `tests/explainers/`
 
 ---
 
-## 9. Success Criteria
+### 6. End-to-End Integration
 
-The system passes evaluation if:
+Integration tests validate full request flows.
 
-- VLM image analysis produces grounded, visually consistent explanations
-- Hallucinations are rare and detectable
-- Confidence reflects actual uncertainty
-- Document analysis remains deterministic and explainable
-- The system can be explained clearly in a technical interview
+Checks include:
+- Image endpoint (VLM and baseline)
+- Document endpoint (multi-page)
+- Correct interaction between pipelines, analyzers, and explainers
 
----
-
-## 10. Continuous Improvement
-
-Evaluation artifacts (images, prompts, outputs) should be versioned and reused to:
-- detect regressions
-- validate new VLMs
-- justify architectural decisions
+Relevant tests:
+- `tests/integration/`
 
 ---
 
-**End of Evaluation Plan**
+## Metrics and Observability
+
+The system emits metrics used for evaluation:
+
+- Request counts (success / failure)
+- Inference latency
+- Retry counts
+- Timeout frequency
+
+These metrics support:
+- Regression detection
+- Performance tuning
+- Model comparison
+
+---
+
+## Non-Goals
+
+The current evaluation plan does NOT include:
+- Model accuracy benchmarks
+- Dataset-driven scoring
+- Automated hallucination detection
+
+These are intentionally deferred.
+
+---
+
+## Manual Review Guidelines
+
+When inspecting outputs manually:
+
+- Verify explanations reference only returned data
+- Check that warnings align with low confidence
+- Ensure grounding metadata is present when expected
+
+---
+
+## Regression Strategy
+
+Before merging changes:
+- All tests must pass
+- API schemas must remain backward compatible
+- New failure modes must be explicitly handled
+
+---
+
+## Future Evaluation Enhancements
+
+Planned improvements:
+- Golden test datasets
+- Confidence calibration metrics
+- Cross-model comparison
+- Automated drift detection
+
+---
+
+## Summary
+
+Evaluation in this system prioritizes:
+- Stability over raw accuracy
+- Transparency over silent failure
+- Safety over overconfidence
+
+---

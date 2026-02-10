@@ -1,229 +1,212 @@
-# Architecture
+# Architecture — Multimodal Visual Inspection API
 
-## 1. Architecture Summary (VLM‑First)
-
-This project implements a **VLM‑first multimodal AI service** for image and document analysis.
-
-**Primary principle:** image understanding is performed by a **Vision‑Language Model (VLM)** that reasons jointly over visual input and text prompts. Vision‑only models are supported **only as optional baselines**, not as the default path.
-
-The system:
-- Accepts **images** (JPEG/PNG) and **documents** (PDFs / scanned images)
-- Uses **true multimodal reasoning** for image analysis (image + prompt → language output)
-- Uses **document understanding** for extraction, followed by grounded language interpretation
-- Returns a consistent JSON response via a production‑style FastAPI interface
+This document describes the high-level architecture of the Multimodal Visual Inspection API,
+its core components, and how data flows through the system.
 
 ---
 
-## 2. High‑Level Architecture (Logical View)
+## Architectural Goals
 
-```mermaid
-flowchart LR
-    C[Client]
-    C -->|HTTP| API[FastAPI API]
+- Clear separation between API, orchestration, and model logic
+- Ability to swap models (VLM, LLM, vision backends) without changing workflows
+- Robustness against partial failures (page-level, model-level)
+- Strong guardrails against LLM hallucinations
+- Testability at unit, pipeline, and integration levels
 
-    API --> V1[Input Validation]
-    V1 --> P[Preprocessing]
+---
 
-    %% Image paths
-    P -->|image + prompt| VLM[VLM Image Analyzer]
-    P -->|image| VIS[Vision‑Only Baseline (Optional)]
+## High-Level Overview
 
-    %% Document path
-    P -->|document| DOC[Document Analyzer]
+The system is organized into layered modules:
 
-    %% Outputs
-    VLM --> R[Response Assembler]
-    VIS --> R
-    DOC --> LLM2[LLM Interpreter]
-    LLM2 --> R
-
-    R --> API
-    API -->|JSON| C
-
-    API --> LOG[Logging & Observability]
-    VLM --> LOG
-    DOC --> LOG
-    LLM2 --> LOG
+```
+Client
+  |
+  v
+FastAPI (routes + schemas)
+  |
+  v
+Pipelines (workflow orchestration)
+  |
+  v
+Analyzers / Explainers (model adapters)
+  |
+  v
+Models (VLM, Vision, LLM backends)
 ```
 
----
-
-## 3. Core Architectural Principles
-
-### 3.1 VLM‑First Image Reasoning
-- Image analysis is performed by a **Vision‑Language Model** that directly conditions language generation on visual input.
-- The LLM *sees the image*, not a summary of labels.
-
-### 3.2 Separation of Perception Modes
-- **Primary:** VLM image analyzer (image + prompt)
-- **Secondary:** vision‑only baseline (classifier / embeddings) for debugging and comparison
-
-### 3.3 Grounded Outputs by Design
-- Language output must be grounded in visual or extracted evidence.
-- Uncertainty and low‑confidence cases must be surfaced explicitly.
-
-### 3.4 Swappable Adapters
-- VLMs, vision backbones, and document engines are accessed through adapters.
-- Models can be swapped without changing API contracts.
+Each layer depends only on the layer below it.
 
 ---
 
-## 4. Data Flows
+## API Layer (`app/api`)
 
-### 4.1 Image Analysis — VLM Path (Primary)
+Responsibilities:
+- HTTP request parsing and validation
+- Response serialization using strict schemas
+- Error mapping to API contract
+- Request ID propagation
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client
-    participant API as FastAPI
-    participant Pre as Preprocess
-    participant VLM as VLM Analyzer
+Key files:
+- `routes_image.py`
+- `routes_document.py`
+- `schemas_image.py`
+- `error_handlers.py`
 
-    Client->>API: POST /analyze/image (image, prompt?)
-    API->>Pre: decode + EXIF fix + RGB
-    Pre->>VLM: image + prompt
-    VLM-->>API: explanation + recommendation + confidence
-    API-->>Client: JSON response
-```
-
-**Key characteristics**
-- Language reasoning is directly conditioned on visual content
-- No intermediate label requirement
-- Suitable for open‑ended reasoning tasks
+The API layer **does not**:
+- Run model inference
+- Implement business logic
+- Handle retries or timeouts
 
 ---
 
-### 4.2 Image Analysis — Vision‑Only Baseline (Optional)
+## Pipeline Layer (`app/pipelines`)
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client
-    participant API as FastAPI
-    participant Pre as Preprocess
-    participant Vis as Vision Baseline
+Pipelines coordinate multi-step workflows and enforce resilience policies.
 
-    Client->>API: POST /analyze/image (baseline mode)
-    API->>Pre: decode + normalize
-    Pre->>Vis: image tensor
-    Vis-->>API: labels + confidence
-    API-->>Client: JSON response
-```
+### Image Pipeline
 
-**Purpose**
-- Debugging perception
-- Evaluation and comparison
-- Not the default pipeline
+File:
+- `image_pipeline.py`
 
----
+Responsibilities:
+- Route requests to VLM or baseline vision analyzer
+- Handle retries, timeouts, and prompt tightening
+- Emit metrics and logs
+- Normalize output into a stable boundary object
 
-### 4.3 Document Analysis Flow
+### Document Pipeline
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Client
-    participant API as FastAPI
-    participant Pre as Preprocess
-    participant Doc as Document Analyzer
-    participant LLM as LLM Interpreter
+File:
+- `document_pipeline.py`
 
-    Client->>API: POST /analyze/document (PDF/image)
-    API->>Pre: render pages / normalize
-    Pre->>Doc: pages/images
-    Doc-->>LLM: structured fields + confidence
-    LLM-->>API: interpretation + recommendation
-    API-->>Client: JSON response
-```
+Responsibilities:
+- Iterate over document pages
+- Call page-level document analyzers
+- Aggregate warnings and confidence
+- Guarantee partial results on failure
 
-Documents are treated as **extraction + interpretation** tasks rather than end‑to‑end VLM reasoning.
+Design rule:
+- One page failure must not fail the entire document.
 
 ---
 
-## 5. Module Responsibilities
+## Preprocessing Layer (`app/preprocessing`)
 
-### 5.1 API Layer (FastAPI)
-- Request parsing and validation
-- Pipeline orchestration
-- Stable response schema
-- Error handling and request IDs
+Responsibilities:
+- Validate file type and size
+- Decode and normalize inputs
+- Convert PDFs into page images
+- Prepare inputs for downstream pipelines
 
----
+Key files:
+- `document.py`
+- `image_preprocess.py`
 
-### 5.2 Preprocessing Layer
-- Decode image bytes
-- Fix EXIF orientation
-- Convert to RGB
-- Enforce size/type limits
-
-Preprocessing does **not** assume model‑specific resizing unless required by an adapter.
+Preprocessing errors are mapped early to client-facing errors.
 
 ---
 
-### 5.3 VLM Image Analyzer (Primary)
-- Accepts image + optional prompt
-- Performs multimodal reasoning
-- Produces explanation, recommendation, and uncertainty
-- Exposes model metadata
+## Analyzer Layer (`app/analyzers`)
+
+Analyzers adapt pipelines to concrete model implementations.
+
+### Vision Analyzers
+
+- CNN-based image classifiers (baseline mode)
+- Stateless, synchronous
+
+### VLM Analyzers
+
+- Multimodal visual-language models
+- Strict JSON output enforcement
+- Timeout and retry aware
+
+### Document Analyzer
+
+- Page-level VLM-based extraction
+- Returns structured fields, tables, confidence, warnings
+- NoOp analyzer used only as a fallback or test stub
+
+Design pattern:
+- Pipelines depend on analyzer interfaces, not implementations.
 
 ---
 
-### 5.4 Vision‑Only Baseline (Optional)
-- Uses pre‑trained vision models
-- Produces labels/embeddings
-- Used for evaluation and debugging only
+## Explainer Layer (`app/explainers`)
+
+The explainer layer uses an LLM to add **grounded explanations**.
+
+Responsibilities:
+- Generate explanation, recommendation, and grounding metadata
+- Consume only structured outputs from pipelines
+- Never introduce new facts
+
+Grounding mechanisms:
+- Prompt constraints (use only provided data)
+- Fixed JSON schema
+- Low temperature settings
+- Explicit limitation reporting
 
 ---
 
-### 5.5 Document Analyzer
-- OCR + layout + key‑value extraction
-- Returns structured fields and confidence
+## Model Backends
+
+Models are treated as interchangeable backends.
+
+Current categories:
+- Vision models (e.g., ImageNet CNNs)
+- VLMs (visual-language models)
+- LLMs (text-only explainers)
+
+Factories (`*_factory.py`) handle model selection and instantiation.
 
 ---
 
-### 5.6 Language Interpretation Layer (Documents)
-- Interprets extracted fields
-- Generates grounded explanations
-- Avoids speculative or domain‑specific claims
+## Error Handling Strategy
+
+- Validation errors: API layer (400–422)
+- Model timeouts: mapped to 504
+- Invalid model output: mapped to 502
+- Unexpected failures: converted to safe, typed errors
+
+Unhandled model exceptions never crash the service.
 
 ---
 
-## 6. Response Contract (Conceptual)
+## Observability
 
-```json
-{
-  "finding": "string",
-  "confidence": 0.0,
-  "details": {"key": "value"},
-  "explanation": "string",
-  "recommendation": "string",
-  "warnings": ["string"]
-}
-```
+The system emits:
+- Structured logs with request IDs
+- Prometheus-style metrics
+- Timing and retry counters
 
-The same contract is used for both VLM and non‑VLM paths.
+Key goals:
+- Debuggability
+- Performance visibility
+- Model behavior monitoring
 
 ---
 
-## 7. Failure Modes
+## Testing Strategy (Architectural View)
 
-- Unsupported input → `400`
-- Oversized payload → `413`
-- Corrupt image/PDF → `422`
-- Model timeout/failure → `502` / `504`
+Tests are layered to match architecture:
 
-Failures are logged with request‑level correlation IDs.
+- Unit tests: individual functions and adapters
+- Pipeline tests: orchestration logic
+- API tests: request/response validation
+- Integration tests: end-to-end workflows
 
----
-
-## 8. Why This Architecture Is Truly VLM‑Aligned
-
-- The language model reasons **directly over visual input**
-- Vision‑only models are explicitly secondary
-- The design mirrors real production multimodal systems that balance control, cost, and explainability
+Mocks and NoOp analyzers are used to isolate layers.
 
 ---
 
-**End of Architecture**
+## Key Architectural Invariants
 
+- API schemas are strict (extra fields forbidden)
+- Pipelines are model-agnostic
+- Models never talk directly to HTTP
+- Partial failures are tolerated
+- Hallucination risk is explicitly surfaced
+
+---

@@ -1,271 +1,149 @@
-# API Contract (VLM-First)
+# API Contract — Multimodal Visual Inspection API
 
-## 1. Overview
-
-This service exposes HTTP APIs for **multimodal analysis of images and documents**.
-
-The system is **VLM-first**:
-- Image analysis is performed using a **Vision–Language Model (VLM)** that reasons jointly over **image + prompt/task**.
-- Vision-only models are supported only as **optional baselines** for debugging and evaluation.
-
-All successful responses follow a consistent schema:
-- `finding`
-- `confidence`
-- `details`
-- `explanation`
-- `recommendation`
-- optional `warnings`
+This document defines the external HTTP contract for the Multimodal Visual Inspection API.
+All responses are JSON and validated against strict schemas. Extra fields are forbidden unless explicitly documented.
 
 ---
 
-## 2. Common Conventions
+## Base URL
 
-### 2.1 Content Types
-- Requests: `multipart/form-data`
-- Responses: `application/json`
-
-### 2.2 Request Size Limits (recommended defaults)
-- Max image size: 10 MB
-- Max document size: 20 MB
-- Max PDF pages: 10
-
-Limits are configurable.
-
-### 2.3 Request IDs
-- The server returns `X-Request-Id` in responses.
-- If the client supplies `X-Request-Id`, it is propagated.
+POST /analyze/image  
+POST /analyze/document
 
 ---
 
-## 3. Endpoints
+## Common Headers
 
-## 3.1 `POST /analyze/image`
-
-### Purpose
-Analyze an image using a **VLM-first** pipeline and return:
-- a short summary/finding
-- a confidence or uncertainty signal
-- a grounded explanation
-- a recommendation or next step
+| Header | Required | Description |
+|------|----------|-------------|
+| X-Request-Id | No | Optional client-provided request ID for request tracing |
 
 ---
 
-### Request
+## POST /analyze/image
 
-**Method:** `POST`  
-**Path:** `/analyze/image`  
-**Content-Type:** `multipart/form-data`
+Analyze a single image using either:
+- VLM mode (multimodal visual-language reasoning)
+- Baseline mode (vision-only classifier, debug/fallback)
 
-#### Form Fields
+### Request (multipart/form-data)
 
-- `file` (required): Image file (`image/jpeg`, `image/png`)
-- `mode` (optional): `"vlm" | "baseline"` (default: `"vlm"`)
-  - `vlm`: **primary mode** — multimodal reasoning (image + prompt/task)
-  - `baseline`: optional vision-only path (classifier/embeddings)
-- `prompt` (optional): string  
-  - Free-form instruction for the VLM  
-  - Example: `"Describe what you see and suggest next steps"`
-- `task` (optional): string  
-  - Predefined task identifier (e.g. `"describe"`, `"qa"`, `"inspect"`)
-- `question` (optional): string  
-  - Used when `task="qa"`
-
-**Rules**
-- `prompt` and `task` are optional.
-- If both are provided, `prompt` takes precedence.
-- If `mode="baseline"`, `prompt`, `task`, and `question` are ignored.
+| Field | Type | Required | Description |
+|------|------|----------|-------------|
+| file | file | Yes | Image file (PNG or JPEG) |
+| mode | string | No | vlm (default) or baseline |
 
 ---
 
-#### Example — VLM mode (free prompt)
-
-```bash
-curl -X POST "http://localhost:8000/analyze/image" \
-  -F "file=@samples/images/sample.jpg" \
-  -F "mode=vlm" \
-  -F "prompt=Describe what you see and suggest next steps"
-```
-
-#### Example — VLM Q&A style
-
-```bash
-curl -X POST "http://localhost:8000/analyze/image" \
-  -F "file=@samples/images/sample.jpg" \
-  -F "task=qa" \
-  -F "question=Is there anything unusual in this image?"
-```
-
-#### Example — Vision-only baseline
-
-```bash
-curl -X POST "http://localhost:8000/analyze/image" \
-  -F "file=@samples/images/sample.jpg" \
-  -F "mode=baseline"
-```
-
----
-
-### Success Response
-
-**Status:** `200 OK`
+### Success Response — 200 OK
 
 ```json
 {
-  "finding": "string",
-  "confidence": 0.0,
+  "finding": "visual_summary_placeholder",
+  "confidence": 0.2,
   "details": {
     "mode": "vlm",
-    "vlm": {
-      "task": "string",
-      "prompt": "string",
-      "raw_output": "string"
-    },
-    "labels": [
-      { "name": "string", "score": 0.0 }
-    ],
     "model": {
-      "name": "string",
-      "version": "string"
+      "name": "mock-vlm",
+      "version": "0.1"
+    },
+    "meta": {
+      "duration_ms": 0,
+      "attempts_used": 1
+    },
+    "grounding": {
+      "risk_level": "high",
+      "assumptions": [],
+      "limitations": [
+        "The analysis contains warnings that reduce confidence.",
+        "LLM JSON missing required keys"
+      ],
+      "llm_model": "mock-llm-v1"
+    },
+    "vlm": {
+      "task": "",
+      "prompt": "",
+      "raw_output": "[MOCK] prompt= task= question=None"
     }
   },
-  "explanation": "string",
-  "recommendation": "string",
-  "warnings": ["string"]
+  "explanation": "A detailed explanation could not be generated reliably from the available analysis results.",
+  "recommendation": "Review the extracted results manually and verify low-confidence items.",
+  "warnings": [
+    "empty_prompt_used_default_behavior"
+  ]
 }
 ```
 
-#### Notes
-- In **VLM mode**:
-  - `details.labels` may be absent or empty.
-  - `details.vlm.raw_output` may include a safe subset of model output.
-- In **baseline mode**:
-  - `details.labels` is expected to be populated.
-- `warnings` is optional.
+---
+
+### Image details object
+
+- details.mode: vlm or baseline
+- details.model: model name and version
+- details.meta: optional runtime metadata
+- details.grounding: optional LLM grounding metadata
+- details.vlm: present only in vlm mode
+- details.baseline: present only in baseline mode
+
+Extra fields are forbidden.
 
 ---
 
-### Error Responses
-- `400 Bad Request` — unsupported file type / invalid parameters
-- `413 Payload Too Large` — file exceeds size limits
-- `422 Unprocessable Entity` — corrupt or invalid image
-- `502 Bad Gateway` — downstream model/service failure
-- `504 Gateway Timeout` — inference timeout
+## POST /analyze/document
+
+Analyze a document (PDF or image) using page-based visual-language analysis.
+
+### Request (multipart/form-data)
+
+| Field | Type | Required | Description |
+|------|------|----------|-------------|
+| file | file | Yes | PDF or image file |
+| mode | string | No | fast or full |
+| max_pages | integer | No | Maximum number of pages to process (default: 10) |
 
 ---
 
-## 3.2 `POST /analyze/document`
-
-### Purpose
-Analyze a document (PDF or image-based) to:
-- extract structured fields and tables
-- generate grounded interpretation and recommendations
-
----
-
-### Request
-
-**Method:** `POST`  
-**Path:** `/analyze/document`  
-**Content-Type:** `multipart/form-data`
-
-#### Form Fields
-- `file` (required): PDF or image (`jpeg/png`)
-- `mode` (optional): `"fast" | "full"` (default: `"full"`)
-- `max_pages` (optional): integer (default: `10`, PDF only)
-
----
-
-#### Example
-
-```bash
-curl -X POST "http://localhost:8000/analyze/document" \
-  -F "file=@samples/docs/sample.pdf" \
-  -F "mode=full" \
-  -F "max_pages=5"
-```
-
----
-
-### Success Response
+### Success Response — 200 OK
 
 ```json
 {
-  "finding": "string",
+  "finding": "Extracted 0 field(s) and 0 table(s) from the document.",
   "confidence": 0.0,
   "details": {
-    "extracted_fields": {
-      "field_name": { "value": "string", "confidence": 0.0 }
-    },
-    "tables": [
-      { "name": "string", "rows": [ { "col": "value" } ] }
-    ],
+    "extracted_fields": {},
+    "tables": [],
     "model": {
-      "name": "string",
-      "version": "string"
+      "name": "document",
+      "version": "v1"
     }
   },
-  "explanation": "string",
-  "recommendation": "string",
-  "warnings": ["string"]
+  "explanation": "The system processed the document page-by-page.",
+  "recommendation": "Validate extracted values manually.",
+  "warnings": [
+    "page[0]: Model output is not valid JSON; using empty extraction."
+  ]
 }
 ```
 
 ---
 
-### Error Responses
-- `400 Bad Request` — unsupported file type / invalid parameters
-- `413 Payload Too Large`
-- `422 Unprocessable Entity` — corrupt PDF / render failure
-- `502 Bad Gateway`
-- `504 Gateway Timeout`
-
----
-
-## 3.3 `GET /healthz`
-
-### Purpose
-Health and readiness check.
-
-**Response**
-```json
-{ "status": "ok" }
-```
-
----
-
-## 4. Error Schema (Global)
-
-All error responses return:
+## Error Response (All Endpoints)
 
 ```json
 {
   "error": {
-    "code": "string",
-    "message": "string",
-    "request_id": "string"
+    "code": "invalid_parameters",
+    "message": "mode must be 'vlm' or 'baseline'",
+    "request_id": "abc-123"
   }
 }
 ```
 
 ---
 
-## 5. Grounding & Safety Constraints
+## Contract Invariants
 
-- Outputs must be grounded in provided visual or extracted evidence.
-- If confidence is low, this must be surfaced explicitly.
-- Avoid speculative or domain-specific claims.
-- Prefer conservative language (e.g. “possible issue”, “suggested next step”).
-
----
-
-## 6. Versioning & Metadata
-
-All responses must include model metadata:
-- `details.model.name`
-- `details.model.version`
-
-This supports reproducibility and safe upgrades.
-
----
-
-**End of API Contract**
+- Extra response fields are forbidden
+- Optional fields may be omitted
+- Grounding metadata is optional and best-effort
+- API responses are stable across minor model changes
